@@ -1,0 +1,365 @@
+---
+title: 'RNA-seq analysis workflow using NOISeq: AZ-TRADD T32 tutorial worksheet'
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In this tutorial, we will use the NOISeq algorithm developed by Sonia Tarazona and colleagues to identify a list of differentially expressed genes from a toy dataset that compares gene expression in rat liver versus kidney. 
+
+The NOISeq method is published as:
+
+1. Tarazona S., Garcia-Alcade F., Dopazo J., Ferrer A., Conesa A (2011) Differential expression in RNA-seq: a matter of depth. *Genome Research*, 21(12), 4436. DOI: 10.1101/gr.124321.111 
+
+2. Tarazona S., Furió-Tarí P., Turrà D., Di Pietro A., Nueda M.J., Ferrer A., Conesa A. (2015) Data quality aware analysis of differential expression in RNA-seq with NOISeq R/Bioc package. *Nucleic Acids Research* Dec 2; 43(21):e140. DOI: 10.1093/nar/gkv711
+
+This tutorial follows a general workflow described with full documentation and explanation of code that is available from NOISeq developers: https://bioconductor.org/packages/release/bioc/html/NOISeq.html 
+
+This package is written in R and the tutorial is written and tested using R Studio (https://www.rstudio.com/) Version 1.2.1335 for Mac and R 3.5.1 (most recent). R studio must be installed before beginning. Please follow all instructions at the link above.
+
+## Prepare your coding environment and load required packages
+
+A major advantage of working in R is that many packages have been developed and freely distributed to execute complex analyses without requiring users to write their own mathematical formulas and line-by-line code. R is extremely popular for bioinformatics and many specialized tools for analysis of NextGen sequencing data have been created.
+
+In this tutorial, we will use the functional packages "tidyverse" and "NOISeq". 
+
+Within R studio, this is easily done using point-and-click by:
+
+1. Locate and click on the "Packages" tab in the bottom right quadrant of the R Studio interface
+2. Click the Install button
+3. Use the default CRAN repository
+4. Type: **`NOISeq`** into the Packages field (it should autocomplete)
+5. Type: **`tidyverse`** into the Packages field (it should autocomplete) 
+
+Alternatively, to type the code yourself (not necessary if you followed the steps above):
+```{r environment, message = FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("NOISeq")
+BiocManager::install("tidyverse")
+```
+
+
+While installation only needs to be done once, in every session, you need to load the libraries (a.k.a. packages) that you want to use during that workflow. These do not need to be loaded at the very start of your workflow, just before you plan to use a function that they contain. However, preparing your environment by loading the packages you expect to need at the beginning is often helpful for organization and reproducibility of your workflow. 
+
+```{r loadLibraries, message = FALSE, warning=FALSE}
+library("NOISeq")
+library("tidyverse")
+```
+
+**General notes for those who have R no coding experience:**
+
+1. Capitalization matters, as does perfect spelling. "Data" and "data" are different variables to a computer. Your command line interface is not nearly as clever as Google and will only do EXACTLY what you tell it to do (or throw errors).
+2. Punctuation matters. In R, quotes are used to indicate text strings, parentheses are used to enclose functions with their variables and always need to be matched, hashtags are for comments not read as code, arrows ("<-") or equal signs are assignment operators, etc. *A lot of troubleshooting is simply finding your missing punctuation*.
+3. If you need to stop a running code process in R Studio, hit the red stop sign icon in session menu (top right of your screen, only appears when code is actively running), or press `Ctrl+C` on your keyboard. 
+4. To find out more about any function, type `?function` to bring up a help page. For an example:
+```{r help}
+?head
+```
+
+## Begin working with data
+
+We'll use an example dataset that is loaded with the NOISeq package. 
+
+NOISeq requires two pieces of information to work that must be provided to the `readData` function: the expression data (data) and the factors defining the experimental groups to be studied or compared (factors). However, in order to perform the quality control of the data or normalize them, other additional annotations need to be provided such as the feature length, the GC content, the biological classification of the features (e.g. Ensembl biotypes), or the chromosome position of each feature.
+
+To load the **example** data: 
+```{r loadData, include=TRUE}
+data(Marioni)
+```
+You should see that the lower left quadrant of your R Studio program "Environment" tab has been populated with a few files.
+
+- mychroms = Genes IDs (Ensembl), chromosome, and positional coordinates
+- mycounts = Gene IDs (Ensembl) with expression counts from your RNA-seq experiment **<- this is the important data file for your analysis**
+- myfactors = which samples are associated with which factors (experimental conditions, here, liver and kideny, as well as RNA-seq run batch)
+
+**Note:** To load your own data, use the **Import Dataset** menu in your **Environment** tab in the lower left quadrant of R Studio. In the command line, you can instead use the read.csv function (general), or many packages have custom read/import functions. Always check what formatting and organization a package is expecting for your file.   
+
+Use the:
+
+- `head` function which shows top 10 in as default (can be specified), in your console window (i.e. where you type code), or
+- `View` function (shows entire data frame in your data viewing window, with point-and-click sorting, searching, and filtering options).
+- `summary` function gives a standard set of summary statisitcs for your data frame based on the variable class (i.e. numeric, character, etc)
+
+```{r lookAtData}
+head(mycounts)
+summary(mychroms)
+```
+
+
+##### Identify your factors and create your experimental design matrix
+
+While this pre-loaded Marioni data set includes factors (`myfactors`), so this next few steps are not necessary, let's practice one approach to loading our own experimental design matrix.
+
+This can all be done in R by generating a `data.frame` and populating it with your factor data, but we'll move into Excel or some other tabular text editing/spreadsheet program (Numbers, TextEdit, Google Sheets, etc) which is a little more intuitive and familiar for most.
+
+Begin by verifying the labels of all your column headers and printing this to a new file. This is unnecessary if you already know exactly which samples are present in your `mycounts`-style expression matrix (i.e. what you receive from the sequencing core), and in which column order they appear. But can be helpful if you're not sure of the order or just want to double check. After all, labeling errors will entirely ruin your experimental conclusions. Here, I'm printing just the top 10 rows using the `head` function for manageability. 
+
+**Note:** In general, you do NOT want to open your original gene expression matrix in Excel. If your file contains gene names (i.e. Sept1) instead of IDs (i.e. ENSG00000177757), Excel will try to reformat it 'smartly' and may convert gene names to dates, interpret chromosome numeric identifiers as numbers you might want to do math on, and otherwise corrupt your data. **Always save an untouched version of your data in a secure archive and work off of copies.**
+
+```{r extractHeaders}
+columnHeaders<-write.csv(head(mycounts), file="headers.csv") 
+```
+
+In your spreadsheet editor of choice, use the sample IDs from your column headers to create a table with 4 columns (Sample, Tissue, Run, and Lane), and 11 rows (header, samples 1-10). `Save as` a .csv or .txt file. I'm calling mine **experimentalMatrix.csv**
+
+Upload your **experimentalMatrix.csv** file into R Studio using the **Import Dataset** function. 
+
+My file is in my working directory `~Documents/Precision Medicine/NOISeq_walkthrough/` folder. If you opt to code the `read.csv` function to load your file, be sure to edit the path to reflect your own working directory.
+
+```{r uploadDesign}
+experimentalMatrix <- read.csv("~/Documents/Precision Medicine/NOISeq_walkthrough/experimentalMatrix.csv")
+View(experimentalMatrix)
+experimentalMatrix
+```
+
+##### Convert your generic data frame into a NOISeq object
+
+Now we're into the specifics of the NOISeq set of RNA-seq analysis functions. Previous operations were much more generalizable.
+
+Converting data to a 'NOISeq object' allows the NOISeq algorithms to combine all the data about expression, factors and gene annotation into the format it will need to run the rest of the analyses. Use `?readData` to see all options and descriptions of the parameters that you can include.
+
+```{r createNOISeq_object}
+myData<-readData(data=mycounts, length=mylength, gc=mygc, biotype=mybiotypes, chromosome=mychroms, factors=myfactors)
+myData
+```
+The example above uses the `myfactors` included in the package. If we want to use the factors that we created instead, try:
+```{r createMyNOISeq}
+myDataMyFactors<-readData(data=mycounts, factors=experimentalMatrix)
+myDataMyFactors
+```
+In our second example (`myDataMyFactors`), note that we omitted specifying the `featureData` which includes information about gene length, biotype, and GC content. The function still works, and the result is still a NOISeq interpretable object putatively capable of detecting differentially expressed genes. However, be aware that some of the useful normalization, quality control, data exploration, and filtering options that the NOISeq package is capable of will not be possible without these annotations. Note as well that we now have 4 `varLabels` (factors) rather than 2.  
+
+**When working with your own data, these feature annotations can be pulled from the Ensembl biomart (https://www.ensembl.org), the UCSC table browser (https://genome.ucsc.edu/), NCBI's Gene database (Download/FTP and/or API; https://www.ncbi.nlm.nih.gov/gene) and/or model organism specific databases. Other reliable resources may also exist.** Pay attention to (and always record) which versions or builds you are using for annotation.
+
+We'll work through the remainder of the tutorial using the `myData` object rather than the `myDataMyFactors` object to ensure consistency against errors. But, try computing and plotting both! They should be identical.
+
+##### Data exploration and quality control
+
+. To generate any of these plots, first of all, dat function must be applied on the input data (NOISeq
+object) to obtain the information to be plotted. The user must specify the type of plot the data are to be
+computed for (argument type). Once the data for the plot have been generated with dat function, the plot will
+be drawn with the explo.plot function. Therefore, for the quality control plots, we will always proceed like in the
+following example:
+
+```{r biodetection}
+# in this function, parameter k refers to the minimum number of counts required for the gene to be counted as detected. When `factor = NULL` these are calculated for each sample. If instead factor = a string that matches the name of one of your columns in your `myfactors` object, the samples and data within that condition are aggregated. Try `factor = "Tissue"`.
+
+mybiodetection <- dat(myData, k = 0, type = "biodetection", factor = NULL)
+# in the interests of space, we'll use the graphics parameter `par` to plot these side-by-side (1 row, 2 columns), and we'll only plot the first two samples by specifying `samples = c(1,2)` in the explo.plot function
+
+par(mfrow = c(1, 2))
+explo.plot(mybiodetection, samples = c(1, 2), plottype = "persample")
+
+#Sensitivity plot allows you to see the average expression and expression distribution across all samples. 
+mycountsbio = dat(myData, factor = NULL, type = "countsbio")
+explo.plot(mycountsbio, toplot = "protein_coding", samples = NULL, plottype = "boxplot")
+
+#RNA-seq can preferentially detect longer genes (versus shorter genes) that are expressed in the same molecular quantities. NOISeq includes a function that is able to normalize for gene length by sorting genes into bins using gene length annotation data (`mylength`) and fitting a cubic spline regression.
+#In the function below, `factor="Tissue"` generates a separate normalization/spline fitting for each Tissue condition. This is optional.
+mylengthbias = dat(myData, factor = "Tissue", type = "lengthbias")
+explo.plot(mylengthbias, samples = NULL, toplot = "global")
+```
+
+Please refer to the NOISeq User Guide for additional data exploration and QC: https://bioconductor.org/packages/devel/bioc/vignettes/NOISeq/inst/doc/NOISeq.pdf
+
+
+##### Principal Components Analysis to assess variance in the data set
+
+PCA is one of the most useful visualizations you can do in order to determine in an unsupervised way whether your samples are clustering according with your experimental design. It is also valuable to determine whether technical noise due to batch effects or other artifacts are contributing meaningful variation that you'll need to remove.
+
+```{r PCA}
+myPCA = dat(myData, type = "PCA")
+explo.plot(myPCA, factor = "Tissue")
+
+#Looking at the NOISeq object we created with our own factors, let's also look at `Run` and `Lane`
+myPCA2 = dat(myDataMyFactors, type = "PCA")
+par(mfrow = c(1, 2))
+explo.plot(myPCA2, factor = "Run")
+explo.plot(myPCA2, factor = "Lane")
+```
+
+##### Create and save a data exploration QC report
+The QCreport function allows the user to quickly generate a pdf report showing the exploratory plots described in this section and more not described to compare either two samples (if `factor=NULL`) or two experimental conditions (if factor is indicated). Depending on the biological information provided (biotypes, length or GC content), the number of plots included in the report may differ.
+
+This report can be generated before normalizing the data `(norm = FALSE)` [as here] or after normalization to check if unwanted effects were corrected `(norm = TRUE)`.
+
+
+``` {r QCreport, message=FALSE, eval=FALSE}
+#to see in console
+QCreport(myData, samples = NULL, factor = "Tissue", norm = FALSE)
+
+#to export as a pdf with a custom name
+QCreport(myData, file="QCreportForRNASeqWithNOISeq.pdf", samples = NULL, factor = "Tissue", norm=FALSE)
+```
+
+Please note that the data are log-transformed when computing Principal Component Analysis (PCA).
+
+## Normalization
+
+The normalization step is **essential** in order to make the samples comparable and to remove possibles biases in the data. It might also be useful to filter out low expression data prior to differential expression analysis, since they are less reliable and may introduce noise in the analysis. The goal of normalization is for differences in normalized read counts to represent *differences in true expression* and ensure that statistics applied in the next step accurately capture the intended experimental design. 
+
+Considering DE genes is helpful for understanding normalization. As stated above, correct normalization will result in correct relationships between normalized read counts. In terms of differential expression, this means that non-DE genes should on average have the same normalized read counts across conditions, while DE genes should have normalized read counts whose differences (ratios) across conditions represent the true differences (ratios) in mRNA/cell. 
+
+The term 'normalization' can often be discussed very broadly, which can lead to confusion as assumptions and techniques for each type of normalization can be very different. But some way to address and normalize the following three elements is important:
+
+1. **Within sample** -> for technical biases that affect detected counts/gene with a sample, such as gene length, mappability, GC content, etc with the intended result that expression counts will accurately reflect gene expression levels in that sample at the end.
+2. **Between samples** -> for technical biases like library preparation, number of molecules sequenced, sequencing depth, with the intended result that the expression counts in sample 1 will now be directly comparable to the expression counts in sample 2 (free of systemic shifts). We'll focus more on this one, and a good overview of different methods is found in the following paper:
+   + Ciaran Evans, Johanna Hardin, Daniel M. Stoebel. 'Selecting between-sample RNA-Seq normalization methods from the perspective of their assumptions.' *Briefings in Bioinformatics* (2018) Sep; 19(5):776-792 https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6171491/ 
+
+3. **Between batches (and/or other key covariates)** -> for systemic sources of variation and technical noise due to factors that cluster data independent of your experimental design. Intended result is that applying statistics will find the signal related to your experimental question.
+
+##### Normalize between samples for sequencing depth bias
+
+The NOISeq package includes implementations of RPKM, Upper Quartile, and TMM between-sample normalization techniques. All methods are "good", and all methods are widely used (as well as others not listed here). Selection of the appropriate normalization technique is data-dependent, somewhat of an art, and may depend on the question and assumptions underlying your experiment. 
+
+- **RPKM** = reads per kilobase of transcript, per million mapped reads.
+   - *Motivation:* greater lane sequencing depth and longer gene length will result in higher mapped counts regardless of actual gene relative expression
+   - *Method:* divide raw transcript read count by total number of reads (in millions) to produce a fraction of the whole and scale by gene length
+   - *Limitations:* assumes similar repertoires across conditions; sensitive to majority gene effects (few very highly expressed genes responsible for the lion's share of total expression which may be DE across conditions. The extreme example is a gene that is exclusively expressed in one condition, at a very high level and dominating the sequencing "real estate" available)
+- **Upper Quartile** = forces the distribution of normalized gene expression data to be the same across all samples
+   - *Motivation:* total read count in a sample is strongly dependent on a few highly expressed genes
+   - *Method:* divides raw transcript read count by the 75th percentile (a.k.a. the upper quartile) of the read counts in the sample (after removing zero counts). This is conceptually similar to normalizing expression values to housekeeping genes and microarray normalizations.
+   - *Limitations:* assumes distributions should be the same across all conditions; assumes relatively modest fraction of true DEGs
+- **TMM** = the Trimmed Mean of the M values (edgeR method)
+   - *Motivation:* to correct for major gene effects and different expression repertoires in a statistically and biologically sophisticated way
+   - *Method:* chooses a sample as a reference and calculates a TMM factor for each other sample that inforporates the weighted trimmed (highest and lowest values removed) mean of the log expression ratios. Counts are scaled according to both the TMM factor and total count of the sample to correct for apparent under-sampling of non-DEG genes whose raw counts will be technically suppressed by condition-specific effects if only library size corrections are used.
+   - *Limitations:* requires the assumption that the majority of genes are non-DEG
+   
+```{r betweenSamplesNorm}
+
+myRPKM = rpkm(assayData(myData)$exprs, long = mylength, k = 0, lc = 1)
+myUQUA = uqua(assayData(myData)$exprs, long = mylength, lc = 0.5, k = 0)
+myTMM = tmm(assayData(myData)$exprs, long = 1000, lc = 0)
+
+head(myRPKM[, 1:4])
+
+#compare this to the original raw count data we started with
+head(mycounts[,1:4])
+```
+
+##### Remove zero count and low count features
+
+Low count features are often untrustworthy and influenced by technical detection capacity and stochastic noise. Inclusion of features with unanimously low expression can yield false positives (is a gene with average raw count of 3 in one condition *genuinely and importantly* more abundant than that gene in a condition with average raw count of 1?), and zeros require special statistical handling to avoid infinite or undefined ratios. After removing unanimous zeros (gene never detected), a common strategy is to add a +1 (or + some data-derived value) count to all cells to ensure that no zeros remain in cells used for comparisons.
+
+In the `NOISeq` package, there are three methods that can be used for low count filtering:
+
+1. **CPM (method 1)**. User selected parameter below which a feature is considered to be low counts. The cutoff for a condition with *s* samples is *CPM x s*. Features with a sum expression value below the condition cutoff in all conditions is removed to reduce multiple testing burden. A cutoff for the coefficient of variation (in percentage) per condition may also be established to eliminate features with inconsistent expression values.
+
+2. **Wilcoxon test (method 2)**. For each feature and condition, *H0 : m = 0* is tested versus *H1 : m > 0*, where
+*m* is the median of counts per condition. Features with p-value > 0.05 in all conditions are filtered out. P-values can be corrected for multiple testing using the p.adj option. This method is only recommended when the number of replicates per condition is at least 5.
+
+3. **Proportion test (method 3)**.  Similar procedure to the Wilcoxon test but testing *H0 : p = p0* versus
+*H1 : p > p0*, where *p* is the feature relative expression and *p0 = CPM/10^6^*. Features with p-value > 0.05
+in all conditions are filtered out. P-values can be corrected for multiple testing using the p.adj option. 
+
+```{r lowCounts}
+#Example with method 1:
+
+# depth = sequencing depth of samples (column totals before normalizing), used in low count feature filter methods 2 & 3
+# cv.cutoff = cutoff for coefficient of variation used in method 1
+# cpm = cutoff for low expression in counts per million (used in methods 1 & 3)
+# p.adj = method for multiple testing correction
+
+myfilt = filtered.data(mycounts, factor = myfactors$Tissue, norm=FALSE, depth=NULL, method=1, cv.cutoff=100, cpm=1, p.adj="fdr")
+
+
+```
+
+## Differential Expression
+
+The `NOISeq` package computes differential expression between two experimental conditions given the expression level of the considered features. The package includes two non-parametric approaches for differential expression analysis: `NOISeq` for technical replicates (`NOISeq-real`) or no replication at all (`NOISeq-sim`), and `NOISeqBIO`, which is optimized for the use of biological replicates. Both methods take read counts from RNA-seq as the expression values, in addition to previously normalized data and read counts from other NGS technologies.
+
+#### Replication in RNA-seq experiments
+**Technical replicates** typically share the same biomaterial but the technical steps used to measure gene expression are repeated in parallel (RNA isolation, library preparation, sequencing). Use of technical replicates captures the variability in count data that is a direct result of technical biases and handling, including that which may be introduced stochastically. Cross-sample data can typically be modeled with Poisson distribution in which variance == mean. 
+
+**Biological replicates** consist of different biological samples that are also processed separately (though, ideally in parallel for RNA-seq). Biological replicates are required if you want to make any inference about the population you are studying, and these capture the variability in your count data that is the result of biological as well as technical variability. Cross-sample data is typically overdispersed (high variance) and is usually modeled with a Negative Binomial distribution which allows variance =/= mean.
+
+**Isogenic biological replicates** are kind of an oddball intermediate, though very common in biological research. Inbred mice or other model organisms, separate wells of a cell line used for comparison, separate cell cultures where a bioassay is applied, and repeated measures of the same patient all have putatively or definitively an identical genotype between replicates, despite generating separate biomaterial. Typically treated as biological replicates as true inter-individual variability does exist.
+
+It should be noted that biological replicates are necessary if the goal is to make any inference about the
+population. Deriving differential expression from technical replicates is useful for drawing conclusions about the
+specific samples being compared in the study but not for extending these conclusions to the whole population.
+
+#### NOISeq with technical replicates
+
+NOISeq computes the following differential expression statistics for each feature: M (which is the log2-ratio of the two conditions) and D (the value of the difference between conditions). Expression levels equal to 0 are replaced with the given constant k > 0, in order to avoid infinite or undetermined M-values. If k = NULL, the 0 is replaced by the midpoint between 0 and the next non-zero value in the expression matrix. A feature is considered to be differentially expressed if its corresponding M and D values are likely to be higher than in noise. Noise distribution is obtained by comparing all pairs of replicates within the same condition. The corresponding M and D values are pooled together to generate the distribution. Changes in expression between conditions with the same magnitude than changes in expression between replicates within the same condition should not be considered as differential expression. Thus, by comparing the (M, D) values of a given feature against the noise distribution, NOISeq obtains the “probability of differential expression” for this feature.
+
+```{r noiseqTechnical}
+mynoiseqTech = noiseq(myData, k = 0.5, norm = "rpkm", factor = "Tissue", pnr = 0.2, nss = 5, v = 0.02, lc = 1, replicates = "technical")
+```
+
+NOISeq returns an `Output` object containing the following elements:
+
+- comparison: String indicating the two experimental conditions being compared and the sense of the comparison.
+- factor: String indicating the factor chosen to compute the differential expression.
+- k: Value to replace zeros in order to avoid indetermination when computing logarithms.
+- lc: Correction factor for length normalization. Counts are divided by length^lc^
+- method: Normalization method chosen.
+- replicates: Type of replicates: “technical” for technical replicates and “biological” for biological ones.
+- results: R data frame containing the differential expression results, where each row corresponds to a
+feature. The columns are: 
+
+   - Expression values for each condition to be used by NOISeq or NOISeqBIO (the
+columns names are the levels of the factor)
+   - differential expression statistics (columns“M” and “D” for NOISeq
+or “theta” for NOISeqBIO)
+   - probability of differential expression (“prob”)
+   - “ranking”, which is a summary statistic of “M” and “D” values equal to −sign(M) × √M2 + D2, than can be used for instance in gene set enrichment analysis (only for NOISeq)
+   - “Length” of each feature (if provided); “GC” content of each feature (if provided)
+   - chromosome where the feature is (“Chrom”), if provided
+   - start and end position of the feature within the chromosome (“GeneStart”, “GeneEnd”), if provided
+   - feature biotype (“Biotype”), if provided.
+- nss: Number of samples to be simulated for each condition (only when there are not replicates available).
+- pnr: Percentage of the total sequencing depth to be used in each simulated replicate (only when there are
+not replicates available). For instance, if pnr = 0.2 , each simulated replicate will have 20% of the total
+reads of the only available replicate in that condition.
+- v: Variability of the size of each simulated replicate (only used by NOISeq-sim).
+
+```{r}
+head(mynoiseqTech@results[[1]])
+```
+Note: the output `myresults@results[[1]]$prob` gives the estimated probability of differential expression for each
+feature. These probabilities are not equivalent to p-values. **The higher the probability, the more likely that the difference in expression is due to the change in the experimental condition and not to chance.**
+```{r degNOISeqTech}
+
+mynoiseqTech.deg = degenes(mynoiseqTech, q = 0.8, M = NULL)
+
+#The probability of differential expression is not equivalent to 1 − pvalue. 
+#Developers recommend using q values around 0.8 for `NOISeq` with technical replicates. If no technical replicates are available and `NOISeq-sim` is used, a more stringent threshold such as q = 0.9 is preferable.
+
+par(mfrow = c(1, 2))
+
+#Plot expression with DEGs highlighted in red
+DE.plot(mynoiseqTech, q = 0.8, graphic = "expr", log.scale = TRUE)
+
+#export results to archive or for downstream analyses
+#recall that for this particular output, the object mynoiseq.deg was filtered for q>= 0.8. For the complete gene list, use the `degenes` function above and set q = 0.
+write.csv(mynoiseqTech.deg, file="DEGs_NOISeqTech.csv")
+```
+
+#### NOISeq with biological replicates
+
+`NOISeqBIO` is optimized for the use on biological replicates (at least 2 per condition).  In this package, the differential expression statistic *θ* is defined as *(M + D)/2*, where *M* and *D* are the statistics defined in the previous section
+but including a correction for the biological variability of the corresponding feature. The probability distribution of *θ* can be described as a mixture of two distributions: one for features changing between conditions and the other for invariant features. For detailed rationale and mathematics, please see the `NOISeq` package vignette. 
+
+```{r NOISeqBiol}
+mynoiseqBio = noiseqbio(myData, k = 0.5, norm = "rpkm", factor = "Tissue", lc = 1, r = 20, adj = 1.5, plot = FALSE, a0per = 0.9, random.seed = 12345, filter = 1)
+
+head(mynoiseqBio@results[[1]])
+
+#To compare to the results assuming these are technical replicates, we'll use exactly the same q value cutoff first. However, developers recommend setting q = 0.95 for `NOISeqBIO` 
+mynoiseqBio.deg = degenes(mynoiseqBio, q = 0.8, M = NULL)
+mynoiseqBio.deg = degenes(mynoiseqBio, q = 0.95, M = NULL)
+par(mfrow = c(1, 2))
+DE.plot(mynoiseqBio, q = 0.95, graphic = "expr", log.scale = TRUE)
+write.csv(mynoiseqBio.deg, file="DEGs_NOISeqBio.csv")
+```
+
+
